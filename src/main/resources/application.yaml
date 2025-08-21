@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: task-scheduler
+  jpa:
+    hibernate:
+      ddl-auto: none # use init.sql to create
+    properties:
+      hibernate:
+        connection:
+          url: ${spring.datasource.url}
+          username: ${spring.datasource.username}
+          password: ${spring.datasource.password}
+  datasource:
+    url: jdbc:mysql://localhost:3306/taskdb?useUnicode=true&characterEncoding=UTF-8
+    username: taskuser
+    password: taskpass
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: INFO
+
+rocketmq:
+  topic: task-schedule-topic
+  name-server: 127.0.0.1:9876
+  producer:
+    group: task-schedule-producer
+    send-message-timeout: 10000
