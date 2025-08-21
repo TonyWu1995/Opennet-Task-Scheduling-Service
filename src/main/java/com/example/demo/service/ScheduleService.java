@@ -5,13 +5,19 @@ import com.example.demo.model.TaskEntity;
 import com.example.demo.mq.Message;
 import com.example.demo.mq.RocketMQProducer;
 import com.example.demo.repository.TaskRepo;
+import lombok.Data;
 import lombok.ToString;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
+
+import static com.example.demo.utils.UUIDUtils.generateUUID;
 
 @Slf4j
 @Service
@@ -33,42 +39,62 @@ public class ScheduleService {
         this.redisLockService = redisLockService;
     }
 
+    @Data
+    static class Triple {
+        String taskId;
+        boolean isLock;
+        String uuid;
+
+        public Triple(String taskId, boolean isLock, String uuid) {
+            this.taskId = taskId;
+            this.isLock = isLock;
+            this.uuid = uuid;
+        }
+    }
+
+    //find all and publish
     public void run(Instant now) {
         log.info("now: {} {}", now, now.toEpochMilli());
         Set<String> taskIdSet = redisService.getDueTasks(now);
         log.info("Due tasks found: {}", taskIdSet);
+        final Map<String, String> lockMap = taskIdSet
+                .stream()
+                .map(id -> {
+                    String uuid = generateUUID();
+                    boolean isLock = redisLockService.tryLock(id, uuid);
+                    return new Triple(id, isLock, uuid);
+                })
+                .filter(triple -> triple.isLock)
+                .collect(Collectors.toMap(Triple::getTaskId, Triple::getUuid));
         final List<TaskEntity> taskEntities = taskRepo.findByTaskIdIn(taskIdSet.stream().toList());
         for (TaskEntity taskEntity : taskEntities) {
-            log.info("Processing task: {}", taskEntity);
-            final Message msg = Message.builder()
-                    .payload(taskEntity.getPayload())
-                    .build();
-            boolean isLock = false;
             try {
-                isLock = redisLockService.tryLock(taskEntity.getTaskId(), taskEntity.getTaskId());
-                if (!isLock) {
+                if (!lockMap.containsKey(taskEntity.getTaskId())) {
+                    log.warn("Task {} is not locked, skipping", taskEntity.getTaskId());
                     continue;
                 }
+                final Message msg = Message.builder()
+                        .payload(taskEntity.getPayload())
+                        .build();
                 Status status = Status.TRIGGERED;
                 if (!producer.send(msg)) {
                     status = Status.FAILURE;
                 }
                 redisService.removeTask(taskEntity.getTaskId());
                 this.updateStatus(taskEntity, status);
-            } catch (Exception e) {
-                log.error("Error while processing task: {}", taskEntity.getTaskId(), e);
+            } catch (Exception ex) {
+                log.error("Error while processing task: {}", taskEntity.getTaskId(), ex);
             } finally {
-                if (isLock) {
-                    redisLockService.unlock(taskEntity.getTaskId(), taskEntity.getTaskId());
-                }
+                // Unlock tasks
+                log.debug("Unlocking task: {}", taskEntity.getTaskId());
+                String uuid = lockMap.get(taskEntity.getTaskId());
+                redisLockService.unlock(taskEntity.getTaskId(), uuid);
             }
         }
     }
 
     void updateStatus(TaskEntity taskEntity, Status status) {
-        taskEntity.setStatus(status.name());
-        taskEntity.setUpdateAt(Instant.now());
-        taskRepo.save(taskEntity);
+        taskRepo.updateStatusTriggeredByTaskIdAndPending(taskEntity.getTaskId(), status.name(), Instant.now());
     }
 
 }

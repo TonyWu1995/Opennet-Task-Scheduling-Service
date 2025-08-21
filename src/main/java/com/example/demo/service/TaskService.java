@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.example.demo.utils.UUIDUtils.generateUUID;
+
 @Slf4j
 @ToString
 @Service
@@ -95,8 +97,9 @@ public class TaskService {
         task.setStatus(Status.CANCELLED.name());
         task.setUpdateAt(Instant.now());
         boolean isLock = false;
+        String uuid = generateUUID();
         try {
-            isLock = redisLockService.tryLock(taskId, taskId);
+            isLock = redisLockService.tryLock(taskId, uuid);
             if (!isLock) {
                 throw new RuntimeException("Failed to get lock for task deletion");
             }
@@ -107,7 +110,7 @@ public class TaskService {
             throw new RuntimeException("Failed to delete task", e);
         } finally {
             if (isLock) {
-                redisLockService.unlock(taskId, taskId);
+                redisLockService.unlock(taskId, uuid);
             }
         }
     }
